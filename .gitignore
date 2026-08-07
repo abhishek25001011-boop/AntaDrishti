@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+alerts.db
+outputs/
+snapshots/
+.env
+*.pyc

@@ -1,0 +1,8 @@
+streamlit>=1.37.0
+opencv-python>=4.10.0
+ultralytics>=8.2.0
+numpy>=1.26.0
+pandas>=2.2.0
+Pillow>=10.4.0
+cvzone>=1.6.1
+google-generativeai>=0.8.0
