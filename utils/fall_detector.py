@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 from config import SNAPSHOT_DIR
 from database.database import save_alert
 from utils.alert_engine import build_alert_record
+from utils.snapshot import save_snapshot
 
 FALL_DURATION_SECONDS = 3.0
 
@@ -26,16 +27,18 @@ def save_fall_snapshot(frame: Any, alert_id: int) -> str:
     return str(path)
 
 
-def create_fall_alert(frame: Any, message: str) -> int:
+def create_fall_alert(frame: Any, message: str, source: str = "Webcam") -> int:
     """Store a new fall alert in SQLite and save a snapshot."""
-    alert_record = build_alert_record("Fall Detection", "Critical", message, status="Active")
+    alert_record = build_alert_record("Fall Detection", "High", message, status="Active")
+    snapshot_path = save_snapshot(frame, SNAPSHOT_DIR, prefix="fall")
     alert_id = save_alert(
         alert_record["type"],
         alert_record["severity"],
         alert_record["message"],
         status=alert_record["status"],
+        source=source,
+        snapshot_path=snapshot_path,
     )
-    save_fall_snapshot(frame, alert_id)
     return alert_id
 
 

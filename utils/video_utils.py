@@ -5,7 +5,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from config import SAMPLE_VIDEO_DIR
+from config import CAMERA_SOURCE, SAMPLE_VIDEO_DIR
+
+_TEMP_CAPTURE_FILES: dict[int, Path] = {}
 
 
 def list_sample_videos() -> list[str]:
@@ -13,70 +15,55 @@ def list_sample_videos() -> list[str]:
     if not SAMPLE_VIDEO_DIR.exists():
         return []
 
-    return [str(path) for path in sorted(SAMPLE_VIDEO_DIR.glob("*")) if path.is_file()]
+    return [str(path) for path in sorted(SAMPLE_VIDEO_DIR.glob("*")) if path.is_file() and path.stat().st_size > 0]
 
 
 def open_video_capture(source: str, uploaded_file=None, sample_video_path: str | None = None) -> Optional[cv2.VideoCapture]:
     """Open a cv2.VideoCapture for webcam, uploaded video, or sample video."""
     try:
         if source == "Webcam":
-            print("Opening video source: webcam")
-            return cv2.VideoCapture(0)
+            print(f"Opening local camera source: {CAMERA_SOURCE}")
+            return cv2.VideoCapture(CAMERA_SOURCE)
 
         if source in {"Uploaded Video", "Upload Video"}:
             if uploaded_file is None:
                 return None
 
-            with tempfile.NamedTemporaryFile(
-                suffix=Path(uploaded_file.name).suffix,
-                delete=False,
-            ) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=Path(uploaded_file.name).suffix, delete=False) as temp_file:
                 temp_file.write(uploaded_file.getvalue())
                 temp_path = temp_file.name
-
-            print(f"Opening video source: {temp_path}")
-            capture = cv2.VideoCapture(temp_path)
-            if capture.isOpened():
-                return capture
-            print(f"Opening video source: {temp_path} with CAP_FFMPEG")
-            return cv2.VideoCapture(temp_path, cv2.CAP_FFMPEG)
+            capture = _open_file_capture(Path(temp_path))
+            if capture is None:
+                Path(temp_path).unlink(missing_ok=True)
+            else:
+                _TEMP_CAPTURE_FILES[id(capture)] = Path(temp_path)
+            return capture
 
         if source == "Sample Video":
-            preferred_names = ["demo_valid.mp4", "crowd.mp4", "fall.mp4", "fight.mp4", "bag.mp4"]
-            candidate_paths: list[Path] = []
-
-            if sample_video_path:
-                selected_path = Path(sample_video_path)
-                if selected_path.exists():
-                    candidate_paths.append(selected_path)
-
-            for file_name in preferred_names:
-                candidate_path = SAMPLE_VIDEO_DIR / file_name
-                if candidate_path.exists() and candidate_path not in candidate_paths:
-                    candidate_paths.append(candidate_path)
-
-            for candidate_path in candidate_paths:
-                resolved_path = candidate_path.resolve()
-                print(f"Opening video source: {resolved_path}")
-                capture = cv2.VideoCapture(str(resolved_path))
-                if capture.isOpened():
-                    return capture
-
-                print(f"Opening video source: {resolved_path} with CAP_FFMPEG")
-                capture = cv2.VideoCapture(str(resolved_path), cv2.CAP_FFMPEG)
-                if capture.isOpened():
-                    return capture
-
-                print(f"Opening video source: {resolved_path} with CAP_ANY")
-                capture = cv2.VideoCapture(str(resolved_path), cv2.CAP_ANY)
-                if capture.isOpened():
-                    return capture
-
-            return None
+            if not sample_video_path:
+                return None
+            selected_path = Path(sample_video_path)
+            if not selected_path.is_file() or selected_path.stat().st_size == 0:
+                return None
+            return _open_file_capture(selected_path)
 
         return None
     except Exception:
         return None
+
+
+def _open_file_capture(path: Path) -> Optional[cv2.VideoCapture]:
+    """Open a non-empty video and reject files that cannot yield a frame."""
+    resolved_path = str(path.resolve())
+    for backend in (None, cv2.CAP_FFMPEG, cv2.CAP_ANY):
+        capture = cv2.VideoCapture(resolved_path) if backend is None else cv2.VideoCapture(resolved_path, backend)
+        if capture.isOpened():
+            ok, _ = capture.read()
+            if ok:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                return capture
+        capture.release()
+    return None
 
 
 def release_capture(capture: Optional[cv2.VideoCapture]) -> None:
@@ -89,3 +76,6 @@ def release_capture(capture: Optional[cv2.VideoCapture]) -> None:
             capture.release()
     except Exception:
         pass
+    temp_path = _TEMP_CAPTURE_FILES.pop(id(capture), None)
+    if temp_path is not None:
+        temp_path.unlink(missing_ok=True)

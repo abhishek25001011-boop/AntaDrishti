@@ -1,10 +1,6 @@
-"""Placeholder module for person detection.
-
-TODO: Replace this placeholder with a YOLOv8 inference pipeline.
-"""
+"""Person-class filtering shared by crowd and event assessment."""
 
 
-def detect_person(frame):
-    """Return a placeholder result for person detection."""
-    # TODO: Load a YOLO model and detect people in the frame.
-    return frame, []
+def get_person_detections(detections: list[dict]) -> list[dict]:
+    """Return only person boxes from real object-detector outputs."""
+    return [item for item in detections if item.get("label") == "person"]

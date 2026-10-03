@@ -1,10 +1,9 @@
-"""Placeholder module for fall detection.
+"""Fall posture heuristic; needs temporal person detections and is not a model."""
 
-TODO: Add a real fall-detection model or posture analysis later.
-"""
+from detectors.person_detector import get_person_detections
 
 
-def detect_fall(frame):
-    """Return a placeholder result for fall detection."""
-    # TODO: Add logic to detect falls from pose/keypoint data.
-    return frame, []
+def detect_fall(detections: list[dict], tracker, now: float | None = None) -> list:
+    """Update the caller's temporal tracker and return newly confirmed falls."""
+    people = get_person_detections(detections)
+    return tracker.update_fall_tracks(people, now=now)

@@ -4,30 +4,23 @@ import cv2
 
 from ultralytics import YOLO
 
-from config import YOLO_MODEL_PATH
+from config import YOLO_MODEL_PATH, YOLO_CONFIDENCE_THRESHOLD
 
 TARGET_CLASSES = {"person", "backpack", "handbag", "suitcase"}
 BAG_CLASSES = {"backpack", "handbag", "suitcase"}
 
 
 def load_yolo_model():
-    """Load the YOLOv8n model, downloading it automatically if needed."""
+    """Load the repository's YOLOv8n weights."""
     model_path = YOLO_MODEL_PATH
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if model_path.exists():
-        try:
-            return YOLO(str(model_path))
-        except Exception as exc:
-            print(f"Failed to load local model {model_path}: {exc}")
-
-    # If local model path is missing, let Ultralytics download yolov8n.pt.
-    return YOLO("yolov8n.pt")
+    if not model_path.is_file() or model_path.stat().st_size == 0:
+        raise FileNotFoundError(f"YOLO weights are missing or empty: {model_path}")
+    return YOLO(str(model_path))
 
 
-def run_detection(frame, model, conf_threshold: float = 0.35):
+def run_detection(frame, model, conf_threshold: float = YOLO_CONFIDENCE_THRESHOLD):
     """Run object detection on a single frame and return annotated output."""
-    results = model(frame, device="cpu", conf=conf_threshold)
+    results = model(frame, device="cpu", conf=conf_threshold, verbose=False)
     output_frame = frame.copy()
     person_count = 0
     bag_count = 0
