@@ -137,7 +137,7 @@ class EventDetector:
             if self._crowd_active:
                 if self._crowd_clear_since is None:
                     self._crowd_clear_since = now
-                elif now - self._crowd_clear_since >= self.CROWD_CLEAR_SECONDS:
+                elif now - self._crowd_clear_since >= CROWD_CLEAR_SECONDS:
                     self._crowd_active = False
                     self._crowd_severity = None
                     self._crowd_clear_since = None
