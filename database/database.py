@@ -1,5 +1,6 @@
 """SQLite helpers for storing and querying incident alerts."""
 
+import json
 import sqlite3
 from contextlib import closing
 
@@ -27,6 +28,7 @@ def init_db() -> None:
                 message TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT '',
                 snapshot_path TEXT,
+                metadata TEXT,
                 timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 status TEXT NOT NULL DEFAULT 'Active',
                 alert_type TEXT,
@@ -38,6 +40,7 @@ def init_db() -> None:
             "event_type": "TEXT NOT NULL DEFAULT 'Unknown'",
             "source": "TEXT NOT NULL DEFAULT ''",
             "snapshot_path": "TEXT",
+            "metadata": "TEXT",
             "timestamp": "TEXT",
         }
         for column, definition in migrations.items():
@@ -61,6 +64,7 @@ def save_alert(
     source: str = "",
     snapshot_path: str | None = None,
     timestamp: str | None = None,
+    metadata: dict | None = None,
 ) -> int:
     """Save one alert while keeping the legacy column names populated."""
     normalized_severity = {"critical": "High", "high": "High", "medium": "Medium", "low": "Low"}.get(
@@ -70,9 +74,20 @@ def save_alert(
     with closing(_connect()) as conn, conn:
         cursor = conn.execute(
             """INSERT INTO alerts
-            (event_type, alert_type, severity, message, source, snapshot_path, timestamp, created_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP), ?)""",
-            (alert_type, alert_type, normalized_severity, message, source, snapshot_path, timestamp, timestamp, status),
+            (event_type, alert_type, severity, message, source, snapshot_path, metadata, timestamp, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP), ?)""",
+            (
+                alert_type,
+                alert_type,
+                normalized_severity,
+                message,
+                source,
+                snapshot_path,
+                json.dumps(metadata, sort_keys=True) if metadata is not None else None,
+                timestamp,
+                timestamp,
+                status,
+            ),
         )
         return int(cursor.lastrowid)
 
@@ -95,6 +110,22 @@ def count_alerts(status: str | None = None, severity: str | None = None) -> int:
         return int(conn.execute(query, params).fetchone()[0])
 
 
+def get_incident_summary() -> dict[str, int]:
+    """Read dashboard totals in one query over persisted incident rows."""
+    init_db()
+    query = """SELECT
+        COUNT(*),
+        COALESCE(SUM(CASE WHEN status = 'Active' THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN severity = 'High' THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN severity = 'Medium' THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN severity = 'Low' THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN datetime(timestamp) >= datetime('now', '-24 hours') THEN 1 ELSE 0 END), 0)
+        FROM alerts"""
+    with closing(_connect()) as conn, conn:
+        row = conn.execute(query).fetchone()
+    return dict(zip(("total", "active", "high", "medium", "low", "last_24h"), map(int, row)))
+
+
 def fetch_alerts(limit: int | None = 10):
     """Return recent alerts, or the full incident history when limit is None."""
     init_db()
@@ -104,6 +135,36 @@ def fetch_alerts(limit: int | None = 10):
         if limit is not None:
             return conn.execute(query + " LIMIT ?", (max(0, int(limit)),)).fetchall()
         return conn.execute(query).fetchall()
+
+
+def fetch_alerts_by_ids(alert_ids):
+    """Return persisted incident rows for a bounded set of known IDs."""
+    ids = list(dict.fromkeys(int(alert_id) for alert_id in alert_ids if alert_id is not None))
+    if not ids:
+        return []
+    init_db()
+    placeholders = ", ".join("?" for _ in ids)
+    with closing(_connect()) as conn, conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            f"SELECT * FROM alerts WHERE id IN ({placeholders}) ORDER BY timestamp DESC, id DESC",
+            ids,
+        ).fetchall()
+
+
+def fetch_recent_alerts_by_source(source: str, limit: int = 20):
+    """Return a bounded, newest-first page of incidents for one exact source."""
+    init_db()
+    bounded_limit = max(0, min(100, int(limit)))
+    with closing(_connect()) as conn, conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """SELECT * FROM alerts
+            WHERE source = ?
+            ORDER BY datetime(timestamp) DESC, id DESC
+            LIMIT ?""",
+            (str(source), bounded_limit),
+        ).fetchall()
 
 
 def count_alerts_last_hours(hours: int = 24) -> int:

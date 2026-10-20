@@ -23,6 +23,7 @@ class PipelineSummary:
     stopped: bool = False
     error: str | None = None
     incidents: list[dict] = field(default_factory=list)
+    peak_people_count: int = 0
 
 
 FrameCallback = Callable[[int, int, int | None, DetectionResult, list[dict]], None]
@@ -57,14 +58,24 @@ def process_capture(
             break
 
         result = manager.process_frame(frame, conf_threshold)
+        summary.peak_people_count = max(summary.peak_people_count, result.person_count)
         events = event_detector.process_frame(frame, result.detections)
         frame_incidents = []
         for event in events:
             if not cooldown.allow(event.event_type, source):
                 continue
-            incident = record_incident(
-                frame, event.event_type, event.severity, event.message, source
-            )
+            try:
+                incident = record_incident(
+                    frame,
+                    event.event_type,
+                    event.severity,
+                    event.message,
+                    source,
+                    metadata={"box": list(event.box)} if event.box else None,
+                )
+            except Exception:
+                cooldown.forget(event.event_type, source)
+                raise
             summary.incidents.append(incident)
             frame_incidents.append(incident)
             if event.box:

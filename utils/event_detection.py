@@ -10,7 +10,7 @@ import numpy as np
 
 from detectors.crowd_detector import measure_crowd
 from detectors.fall_detector import detect_fall
-from detectors.person_detector import get_person_detections
+from detectors.person_detector import get_person_detections, is_valid_box
 from detectors.yolo_detector import BAG_CLASSES
 from detectors.violence_detector import RapidInteractionHeuristic, detect_violence
 from config import (
@@ -114,13 +114,22 @@ class EventDetector:
 
     def _bag_events(self, detections: list[dict]) -> list[DetectedEvent]:
         """Turn valid YOLO bag-class detections into ordinary pipeline incidents."""
+        if not isinstance(detections, (list, tuple)):
+            return []
         events = []
         for detection in detections:
+            if not isinstance(detection, dict):
+                continue
             label = detection.get("label")
             box = detection.get("box")
-            if label not in BAG_CLASSES or box is None:
+            if label not in BAG_CLASSES or not is_valid_box(box):
                 continue
-            confidence = float(detection.get("confidence", 0.0))
+            try:
+                confidence = float(detection.get("confidence", 0.0))
+            except (TypeError, ValueError, OverflowError):
+                confidence = 0.0
+            if not math.isfinite(confidence):
+                confidence = 0.0
             events.append(DetectedEvent(
                 "Bag Detection", "Low",
                 f"YOLO detected a {label} ({confidence:.0%} confidence); review required.",

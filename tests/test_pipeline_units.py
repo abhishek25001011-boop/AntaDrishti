@@ -1,20 +1,47 @@
 """Fast isolated tests for event thresholds and persistence helpers."""
 
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
 
 import database.database as database
 from detectors.crowd_detector import detect_crowd
+from dashboard import system_info
 from utils.alert_cooldown import AlertCooldown
 from utils.event_detection import EventDetector
 from utils.severity import get_severity
 from utils.snapshot import save_snapshot
+from utils.video_utils import list_sample_videos
 
 
 class PipelineUnitTests(unittest.TestCase):
+    def test_webcam_status_waits_for_a_recent_processed_frame(self):
+        with patch.object(system_info.st, "session_state", {
+            "webcam_stream_active": True,
+            "last_detection_metrics": None,
+        }):
+            self.assertEqual(system_info.application_status(), "Camera Streaming")
+
+        with patch.object(system_info.st, "session_state", {
+            "webcam_stream_active": True,
+            "last_detection_metrics": {
+                "source": "Browser webcam", "updated_at": time.time(),
+            },
+        }):
+            self.assertEqual(system_info.application_status(), "Detection Active")
+
+        with patch.object(system_info.st, "session_state", {
+            "webcam_stream_active": True,
+            "last_detection_metrics": {
+                "source": "Browser webcam", "updated_at": time.time() - 10,
+            },
+        }):
+            self.assertEqual(system_info.application_status(), "Camera Streaming")
+
     def test_severity_mapping(self):
         self.assertEqual(get_severity(1), "Low")
         self.assertEqual(get_severity(5), "Medium")
@@ -77,13 +104,22 @@ class PipelineUnitTests(unittest.TestCase):
                     "Crowd Density", "Medium", "unit test only", source="test source"
                 )
                 row = dict(database.fetch_alerts(1)[0])
+                summary = database.get_incident_summary()
                 self.assertEqual(row["id"], alert_id)
                 self.assertEqual(row["event_type"], "Crowd Density")
                 self.assertEqual(row["severity"], "Medium")
                 self.assertEqual(row["source"], "test source")
+                self.assertEqual(summary["total"], 1)
+                self.assertEqual(summary["active"], 1)
+                self.assertEqual(summary["medium"], 1)
         finally:
             database.DB_PATH = old_path
             database._initialized_path = old_initialized_path
+
+    def test_sample_video_discovery_ignores_non_video_files(self):
+        paths = list_sample_videos()
+        self.assertTrue(paths)
+        self.assertTrue(all(Path(path).suffix.lower() in {".avi", ".mkv", ".mov", ".mp4"} for path in paths))
 
 
 if __name__ == "__main__":

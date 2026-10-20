@@ -5,9 +5,10 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from config import CAMERA_SOURCE, SAMPLE_VIDEO_DIR
+from config import CAMERA_SOURCE, MAX_VIDEO_UPLOAD_MB, SAMPLE_VIDEO_DIR
 
 _TEMP_CAPTURE_FILES: dict[int, Path] = {}
+_VIDEO_EXTENSIONS = {".avi", ".mkv", ".mov", ".mp4"}
 
 
 def list_sample_videos() -> list[str]:
@@ -15,11 +16,19 @@ def list_sample_videos() -> list[str]:
     if not SAMPLE_VIDEO_DIR.exists():
         return []
 
-    return [str(path) for path in sorted(SAMPLE_VIDEO_DIR.glob("*")) if path.is_file() and path.stat().st_size > 0]
+    return [
+        str(path)
+        for path in sorted(SAMPLE_VIDEO_DIR.glob("*"))
+        if path.is_file()
+        and path.suffix.lower() in _VIDEO_EXTENSIONS
+        and path.stat().st_size > 0
+    ]
 
 
 def open_video_capture(source: str, uploaded_file=None, sample_video_path: str | None = None) -> Optional[cv2.VideoCapture]:
     """Open a cv2.VideoCapture for webcam, uploaded video, or sample video."""
+    temp_path = None
+    capture = None
     try:
         if source == "Webcam":
             print(f"Opening local camera source: {CAMERA_SOURCE}")
@@ -29,12 +38,31 @@ def open_video_capture(source: str, uploaded_file=None, sample_video_path: str |
             if uploaded_file is None:
                 return None
 
-            with tempfile.NamedTemporaryFile(suffix=Path(uploaded_file.name).suffix, delete=False) as temp_file:
-                temp_file.write(uploaded_file.getvalue())
+            suffix = Path(str(getattr(uploaded_file, "name", ""))).suffix.lower()
+            if suffix not in _VIDEO_EXTENSIONS:
+                return None
+
+            max_bytes = MAX_VIDEO_UPLOAD_MB * 1024 * 1024
+            declared_size = getattr(uploaded_file, "size", None)
+            if declared_size is not None and int(declared_size) > max_bytes:
+                return None
+
+            get_buffer = getattr(uploaded_file, "getbuffer", None)
+            payload = get_buffer() if callable(get_buffer) else uploaded_file.getvalue()
+            payload_size = getattr(payload, "nbytes", len(payload))
+            if payload_size > max_bytes:
+                return None
+
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+                temp_file.write(payload)
                 temp_path = temp_file.name
             capture = _open_file_capture(Path(temp_path))
             if capture is None:
-                Path(temp_path).unlink(missing_ok=True)
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                temp_path = None
             else:
                 _TEMP_CAPTURE_FILES[id(capture)] = Path(temp_path)
             return capture
@@ -49,6 +77,16 @@ def open_video_capture(source: str, uploaded_file=None, sample_video_path: str |
 
         return None
     except Exception:
+        if capture is not None:
+            try:
+                capture.release()
+            except Exception:
+                pass
+        if temp_path is not None:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
         return None
 
 
@@ -72,8 +110,7 @@ def release_capture(capture: Optional[cv2.VideoCapture]) -> None:
         return
 
     try:
-        if capture.isOpened():
-            capture.release()
+        capture.release()
     except Exception:
         pass
     temp_path = _TEMP_CAPTURE_FILES.pop(id(capture), None)

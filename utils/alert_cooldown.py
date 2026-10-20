@@ -17,5 +17,14 @@ class AlertCooldown:
         last = self._last_alert.get(key)
         if last is not None and now - last < self.cooldown_seconds:
             return False
-        self._last_alert[key] = now
+        self.mark(event_type, source, now)
         return True
+
+    def mark(self, event_type: str, source: str, now: float | None = None) -> None:
+        """Start the cooldown after an incident has been persisted successfully."""
+        now = time.monotonic() if now is None else now
+        self._last_alert[(str(source), str(event_type))] = now
+
+    def forget(self, event_type: str, source: str) -> None:
+        """Release a cooldown reservation when persistence did not succeed."""
+        self._last_alert.pop((str(source), str(event_type)), None)

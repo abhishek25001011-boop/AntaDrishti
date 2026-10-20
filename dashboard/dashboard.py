@@ -1,33 +1,69 @@
-"""Page routing and overview for the public-safety command center."""
+"""Page routing and data-backed overview for the public-safety command center."""
+
+import logging
+import time
 
 import streamlit as st
 
 from config import APP_DESCRIPTION
+from config import YOLO_MODEL_PATH
+from dashboard.alert_controls import (
+    initialize_alert_state,
+    render_alert_preferences,
+    render_new_incident_alerts,
+)
 from dashboard.analytics import render_analytics_page
-from dashboard.history import render_alert_center, render_recent_alerts
-from dashboard.live_feed import render_live_detection
+from dashboard.camera_sources import render_camera_sources
+from dashboard.history import _source_label, render_alert_center, render_recent_alerts
+from dashboard.live_feed import render_browser_webcam, render_live_detection
 from dashboard.sidebar import render_sidebar
 from dashboard.system_info import application_status, render_settings
-from dashboard.theme import apply_theme, render_header
-from database.database import count_alerts, count_alerts_last_hours
+from dashboard.theme import apply_theme, render_header, render_page_heading
+from database.database import get_incident_summary
 from utils.video_utils import list_sample_videos
+
+logger = logging.getLogger(__name__)
+
+
+def _navigate_to(page: str) -> None:
+    st.session_state.navigation = page
 
 
 def _render_overview() -> None:
-    st.markdown("<div class='ad-kicker'>Operations overview</div>", unsafe_allow_html=True)
-    st.title("Safety monitoring dashboard")
-    st.caption(APP_DESCRIPTION)
+    render_page_heading("Operations overview", "Command center", APP_DESCRIPTION)
 
     sample_count = len(list_sample_videos())
-    source_modes = 2 + sample_count  # local camera + upload mode + listed sample files
-    kpis = st.columns(4)
-    kpis[0].metric("Available Sources", f"{source_modes}", help="Input modes plus nonempty sample video files.")
-    kpis[1].metric("Total Incidents", count_alerts())
-    kpis[2].metric("High Severity", count_alerts(severity="High"))
-    kpis[3].metric("Alerts · 24 hours", count_alerts_last_hours(24))
-    st.caption(f"{sample_count} valid sample video(s) · webcam availability depends on this host · uploads accepted on demand")
+    try:
+        summary = get_incident_summary()
+    except Exception:
+        logger.exception("Could not load command-center incident totals")
+        summary = None
+        st.warning("Incident totals are temporarily unavailable. Check the database connection in Settings.")
+    if summary is not None:
+        kpis = st.columns(5)
+        kpis[0].metric("Active incidents", summary["active"])
+        kpis[1].metric("High severity", summary["high"])
+        kpis[2].metric("Medium severity", summary["medium"])
+        kpis[3].metric("Low severity", summary["low"])
+        kpis[4].metric("Incidents · 24 hours", summary["last_24h"])
+        st.caption(
+            f"{summary['total']} incidents recorded · {sample_count} nonempty sample video(s) available. "
+            "Incident totals come from SQLite history."
+        )
+    else:
+        st.caption(f"{sample_count} nonempty sample video(s) available.")
 
-    left, right = st.columns([1.7, 1])
+    shortcuts = st.columns(4)
+    for column, page in zip(shortcuts, ("Live Detection", "Video Analysis", "Alerts", "Analytics")):
+        column.button(
+            page,
+            width="stretch",
+            key=f"overview_{page.lower().replace(' ', '_')}",
+            on_click=_navigate_to,
+            args=(page,),
+        )
+
+    left, right = st.columns([1.65, 1])
     with left:
         with st.container(border=True):
             st.markdown("#### Detection workspace")
@@ -35,46 +71,95 @@ def _render_overview() -> None:
             if frame is not None:
                 st.image(frame, caption="Most recently processed frame", width="stretch")
             else:
-                st.info("No frame processed in this session yet. Open Live Detection or Video Analysis to begin.")
-            summary = st.session_state.get("last_summary")
-            if summary:
+                st.info("No frame has been processed in this session yet. Start Live Detection or Video Analysis to begin.")
+
+            metrics = st.session_state.get("last_detection_metrics")
+            if metrics:
+                age = max(0, int(time.time() - metrics["updated_at"]))
+                if age <= 5:
+                    age_label = f"{age}s ago"
+                elif age < 60:
+                    age_label = f"{age}s ago · stale"
+                else:
+                    age_label = f"{age // 60}m ago · stale"
+                readings = st.columns(3)
+                readings[0].metric("People · last processed", metrics["people"])
+                readings[1].metric("Crowd estimate", metrics["crowd"])
+                readings[2].metric("Inference FPS", f"{metrics['fps']:.1f}")
+                st.caption(f"Last processed {age_label} · source: {metrics['source']}")
+
+            summary_state = st.session_state.get("last_summary")
+            if summary_state:
                 st.caption(
-                    f"Last run: {summary.frames_processed} frame(s) · "
-                    f"{len(summary.incidents)} incident(s) · "
-                    f"source: {st.session_state.get('last_run_source', 'not recorded')}"
+                    f"Last video run: {summary_state.frames_processed} frame(s) · "
+                    f"{len(summary_state.incidents)} incident(s) · "
+                    f"source: {_source_label(st.session_state.get('last_run_source', 'not recorded'))}"
                 )
     with right:
         with st.container(border=True):
-            st.markdown("#### System status")
-            st.markdown(f"**{application_status()}**")
-            st.caption("Person detection uses the included YOLOv8n COCO model.")
-            st.caption("Fall and possible altercation alerts use experimental heuristics.")
-            st.caption("No incident counts or validation metrics are estimated.")
+            st.markdown("#### Operational status")
+            st.markdown(f"**Application:** {application_status()}")
+            model_available = YOLO_MODEL_PATH.is_file() and YOLO_MODEL_PATH.stat().st_size > 0
+            manager = st.session_state.get("detector_manager")
+            model_loaded = manager is not None and getattr(manager, "_model", None) is not None
+            if model_loaded:
+                model_state = "Loaded in this session"
+            elif model_available:
+                model_state = "Installed · loads on first inference"
+            else:
+                model_state = "Model file missing"
+            st.caption(f"Detection model: {model_state}")
+            camera_state = "Browser camera streaming" if st.session_state.get("webcam_stream_active") else "Browser camera idle"
+            st.caption(camera_state)
+            st.caption("Fall and possible altercation signals are experimental heuristics.")
+            st.caption("Saved incident totals are shown above; no counts or validation metrics are estimated.")
 
-    render_recent_alerts(limit=4)
+    render_recent_alerts(limit=5)
 
 
 def render_dashboard() -> None:
-    apply_theme()
+    initialize_alert_state(st.session_state)
     page = render_sidebar()
+    apply_theme(st.session_state.theme_mode)
     render_header(application_status())
 
     if page == "Dashboard":
         _render_overview()
     elif page == "Live Detection":
-        st.title("Live Detection")
-        st.caption("One bounded run per Start action. Camera input uses the host machine's local camera.")
-        render_live_detection()
+        render_page_heading(
+            "Live monitoring",
+            "Browser camera",
+            "Allow camera access when prompted. WebRTC requires HTTPS or localhost.",
+        )
+        render_browser_webcam()
     elif page == "Video Analysis":
-        st.title("Video Analysis")
-        st.caption("Analyze one selected sample or uploaded clip through the shared detection pipeline.")
+        render_page_heading(
+            "Recorded media",
+            "Video analysis",
+            "Run bounded detection on an uploaded clip or one of the included sample videos.",
+        )
         render_live_detection()
+    elif page == "Camera Sources":
+        render_page_heading(
+            "Input inventory", "Camera sources", "Review actual camera workflow status and supported connection types."
+        )
+        render_camera_sources()
     elif page == "Alerts":
-        st.title("Incident History & Alert Center")
+        render_page_heading(
+            "Operations records", "Alerts and history", "Review saved incidents, snapshots, and event details."
+        )
         render_alert_center()
     elif page == "Analytics":
-        st.title("Incident Analytics")
+        render_page_heading(
+            "Operations insight", "Incident analytics", "Explore trends computed from saved incident history."
+        )
         render_analytics_page()
     elif page == "Settings":
-        st.title("System Configuration")
+        render_page_heading(
+            "System configuration", "Settings", "Review runtime status, alert controls, and session preferences."
+        )
         render_settings()
+        render_alert_preferences()
+
+    if page != "Live Detection":
+        render_new_incident_alerts()

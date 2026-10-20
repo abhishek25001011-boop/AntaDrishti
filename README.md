@@ -1,61 +1,92 @@
 # AntaDrishti
 
-AntaDrishti is a Streamlit public-safety monitoring prototype. It processes a webcam, uploaded video, or a nonempty sample video with the included YOLOv8n COCO weights. Person and bag detections feed frame-relative crowd estimates and experimental temporal event heuristics. Incidents are saved with a timestamped snapshot and SQLite history.
+AntaDrishti is a Streamlit public-safety monitoring prototype. It processes browser webcam frames or recorded video, detects supported objects with YOLOv8n, assesses crowd density, and saves generated incidents to local SQLite history with snapshots when available.
 
-## Current detection scope
+## Problem and approach
 
-- **People and bags:** YOLOv8n object detection using the root-level `yolov8n.pt` weights.
-- **Crowd density:** estimated from detected person count and the fraction of frame covered by person boxes.
-- **Possible fall:** a temporal upright-to-horizontal person-box heuristic. It can confuse sitting, bending, or occlusion with a fall.
-- **Possible physical altercation:** an experimental heuristic that looks for repeated high optical flow around nearby detected people. There is no trained fight detector, and this can flag unrelated activity.
-- **Severity:** incidents are stored as Low, Medium, or High.
+Public-space monitoring can require an operator to review multiple camera feeds and incident records. This prototype brings frame processing, event signals, and incident review into one local dashboard. It is a demonstration and review aid, not a validated or autonomous safety system.
 
-These are prototype signals for review, not validated safety systems. The checked-in `sample_videos/demo_valid.mp4` is a graphic test clip without people; it is useful for validating video decoding but cannot demonstrate person or event detection. Add suitable footage or use a camera/upload to exercise those detections.
+## Features and architecture
 
-## Requirements
+- **Dashboard:** persisted incident totals, recent incidents, and latest processed-frame metrics.
+- **Live Detection:** browser camera through WebRTC, frame callback, cached YOLO inference, and a bounded handoff queue. Events are saved on the Streamlit thread.
+- **Video Analysis:** select an included sample clip or upload an MP4, AVI, MOV, or MKV file. Processing is bounded to 300 frames per run and shows progress and results.
+- **Alerts / History:** SQLite-backed incident list, event/severity/source filters, incident details, snapshot viewing, and CSV export.
+- **Analytics:** charts derived from persisted SQLite incidents.
+- **Settings:** model/database availability and active thresholds.
+
+The shared `DetectionManager` loads `yolov8n.pt` lazily and reuses it. YOLOv8n COCO detections support people and recognized bag classes. Crowd assessment uses person counts and bounding-box occupancy. Incident events pass through event detection and an in-memory 30-second per-event/source cooldown before persistence.
+
+## Technology
 
 - Python 3.10 or newer
-- Streamlit 1.51 or newer
-- The included root-level `yolov8n.pt` model file
-- A webcam for camera input, or a readable video file for upload/sample processing
+- Streamlit and `streamlit-webrtc`
+- OpenCV headless, Ultralytics, NumPy, and pandas
+- SQLite
+- Included `yolov8n.pt` weights
 
-## Install and run (Windows PowerShell)
+Dependencies are listed in `requirements.txt`. This repository does not include a deployment manifest or managed persistent database configuration.
+
+## Install and run locally (Windows PowerShell)
+
+From the repository root:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
-streamlit run app.py
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-Choose **Webcam**, **Upload Video**, or a listed nonempty **Sample Video** from the sidebar. Select a confidence threshold and press **Start Detection**. Each run processes up to 300 frames, shows the latest processed frame and progress, then stops automatically and returns control. For long videos, a new run starts from the beginning; it does not resume.
+Open the local URL printed by Streamlit, normally `http://localhost:8501`. The model weights are expected at the repository root as `yolov8n.pt`; the app does not need to download them when that file is present.
 
-Uploads accept MP4, AVI, MOV, and MKV where the installed OpenCV video backend can decode them. The app copies the upload to a temporary file while processing and removes it afterward. Webcam mode opens the local camera attached to the machine running Streamlit; a remotely hosted Streamlit app cannot access the viewer's camera. Camera runs are also bounded to 300 frames.
+## Browser webcam demo
 
-The sample selector lists only nonempty files. The supplied `demo_valid.mp4` is a graphic clip with no real people, so it verifies decoding and bounded processing only. Use real video with visible people to evaluate YOLO and the event heuristics.
+1. Open **Live Detection** in the sidebar.
+2. Start the embedded camera stream and allow camera access in the browser prompt.
+3. Use `localhost` or HTTPS. Browsers generally block webcam access on an insecure remote HTTP origin.
+4. Wait for the processed-frame status and metrics. Stop the stream using the embedded camera controls. Recent events from the current camera session appear on this page.
 
-The sidebar navigation contains **Dashboard**, **Live Detection**, **Video Analysis**, **Alerts**, **Analytics**, and **Settings**. Alert history supports event/severity/source filters, incident details, snapshot viewing, and CSV export. Analytics are computed from stored SQLite incidents only. Settings shows the model/database status and active heuristic thresholds; confidence and the session alert cooldown are connected controls.
+The browser sends frames to the running Streamlit app for inference. The browser webcam is separate from the local OpenCV camera input available in Video Analysis; it is not treated as an uploaded video.
 
-## Data locations
+## Sample-video and upload demo
 
-- `database/alerts.db`: incident records. Existing `alerts` tables are upgraded in place while legacy columns are retained.
-- `snapshots/`: timestamped JPEG incident images.
-- `sample_videos/`: selectable local video inputs; empty files are ignored.
+1. Open **Video Analysis**.
+2. Choose **Sample Video** and a listed clip, or choose **Upload Video** and select a supported file.
+3. Press **Start video analysis**. The page displays processing progress, processed-frame and people summary, and any persisted incidents.
 
-## Known limits
+`sample_videos/demo_valid.mp4` is a graphic test clip without people. It verifies video decoding and bounded processing, not person or incident detection. Other bundled clips are `sample_videos/bag.mp4`, `sample_videos/crowd.mp4`, `sample_videos/fall.mp4`, and `sample_videos/fight.mp4`; their filenames describe the intended demo scenario and do not establish detection accuracy. Inference depends on the actual frames, model, and runtime.
 
-- The bundled sample clip has no real people, so person detection must be tried with real footage.
-- Camera availability and codec support depend on the machine running Streamlit.
-- Fight and fall heuristics require person detections and are not machine-learned event classifiers.
-- Repeated event/source pairs are suppressed for 30 seconds by an in-memory cooldown. Restarting the app clears that cooldown.
+Uploads are limited to 200 MB in the interface. A temporary file is used while OpenCV processes an upload and is removed when processing ends. A run handles at most 300 frames; starting another run begins at the start of the selected video.
 
-## Internal tests
+## Incidents, privacy, and persistence
 
-Run the isolated unit tests with:
+- SQLite incident records are stored at `database/alerts.db`.
+- Incident snapshots are written under `snapshots/`; snapshot failure can leave the incident record without an image.
+- Browser webcam frames and uploaded video are processed by the server running this app. Video uploads use a temporary server-side file. Frames are not retained as a video archive; event snapshots are saved when incidents are persisted.
+- On a local run, database and snapshot files remain on that machine until removed by its operator. On hosted deployments, they remain on the host filesystem; ephemeral or scaled hosts may lose or split local files. This project does not configure durable shared storage, authentication, or multi-instance coordination.
+- The cooldown is in memory and resets when the process restarts. SQLite persistence alone does not make a hosted filesystem durable.
+
+Use footage you are authorized to process. Avoid sensitive footage in a hosted demo unless the host's access and retention behavior is understood.
+
+## Known limitations
+
+- Possible falls are based on a temporal upright-to-horizontal person-box heuristic. Sitting, bending, occlusion, and detector errors can resemble a fall.
+- Possible altercations use an experimental optical-flow heuristic around nearby detections. This is not a trained fight detector and can flag unrelated motion.
+- Crowd density is a frame-relative estimate, not a validated crowd-safety measure. Object detection and event signals have not been assigned accuracy claims by this project.
+- Camera permission, camera availability, inference speed, and supported video codecs depend on the browser, host, hardware, and installed OpenCV backend.
+- The application is a competition prototype. It has no built-in user authentication or configured production deployment/persistence service.
+
+## Tests
+
+From the repository root, with project dependencies installed:
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pip install pytest
+python -m pytest -q
+python -m compileall app.py dashboard detectors utils database tests
 ```
 
-The tests use synthetic frames only for algorithm unit checks and a temporary SQLite database; they do not create production incidents.
+`pytest` is optional test tooling and is not an application dependency in `requirements.txt`.
+Automated tests cover isolated pipeline, persistence, and UI-state behavior. Mocked tests do not verify a real browser webcam session or real-world detector accuracy.

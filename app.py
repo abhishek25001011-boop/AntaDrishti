@@ -12,6 +12,5 @@ def main() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
     render_dashboard()
 
-
 if __name__ == "__main__":
     main()
